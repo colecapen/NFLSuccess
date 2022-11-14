@@ -1,0 +1,1416 @@
+```{r}
+load("C:/Users/colec/Desktop/VS/FB/nfl_pbp_1999_2020.rda")
+```
+
+```{r}
+install.packages('nflfastR')
+install.packages('tidyverse')
+install.packages('ggplot2')
+install.packages('ggdark')
+install.packages('ggimage')
+install.packages('GGally')
+install.packages('ggrepel')
+install.packages('scales')
+install.packages('plotly')
+install.packages('DT')
+install.packages('dplyr')
+install.packages('SparseDC')
+install.packages('xgboost')
+install.packages('caret')
+install.packages('reshape2')
+install.packages('stringr')
+```
+
+```{r}
+library(nflfastR)
+library(tidyverse)
+library(ggplot2)
+library(ggdark)
+library(ggimage)
+library(GGally)
+library(ggrepel)
+library(scales)
+library(plotly)
+library(DT)
+library(dplyr)
+library(SparseDC)
+library(xgboost)
+library(caret)
+library(reshape2)
+library(stringr)
+```
+```{r}
+pbp <- pbp %>% 
+    filter(season >= 2006, !is.na(epa), play_type == "no_play" | play_type == "run" | play_type == "pass") %>%
+    mutate(pass = if_else(str_detect(desc, "(pass)|(sacked)|(scramble)"), 1, 0),
+    rush = if_else(str_detect(desc, "(left end)|(left tackle)|(left guard)|(up the middle)|(right guard)|(right tackle)|(right end)") & pass == 0, 1, 0),
+    success = ifelse(epa > 0, 1, 0)
+    )
+
+pbp <- pbp %>% 
+    filter(pass == 1 | rush == 1)
+```
+
+```{r}
+pbp$run_gap[(pbp$rush == 1) & (is.na(pbp$run_gap))] = 'center'
+
+pbp <- pbp %>% 
+  mutate(OSrun = ifelse(run_gap == "end" | run_gap == 'tackle', 1, 0),
+         ISrun = ifelse(run_gap == "guard" | run_gap == 'center', 1, 0),
+         yps = air_yards - ydstogo)
+
+```
+```{r}
+pbp$highwind <- ifelse((pbp$wind >= 20), 1, 0)
+
+pbp$cold <- ifelse((pbp$roof == 'dome' | pbp$roof == 'closed'), 0, ifelse((pbp$temp <= 30), 1, 0))
+
+pbp$hot <- ifelse((pbp$roof == 'dome' | pbp$roof == 'closed'), 0, ifelse((pbp$temp >= 80), 1, 0))
+
+pbp$rain <- ifelse((str_detect(pbp$weather, '(rain)')), 1, 0)
+
+pbp$snow <- ifelse((str_detect(pbp$weather, '(snow)')), 1, 0)
+
+pbp$explosive <- ifelse((pbp$yards_gained >= 25), 1, 0)
+
+pbp$third_down_converted <- ifelse((pbp$down == 3), ifelse((pbp$yards_gained > pbp$ydstogo), 1, 0), NA)
+
+pbp$run_gap <- ifelse(pbp$play_type == 'run' & is.na(pbp$run_gap), 'sweep', pbp$run_gap)
+
+pbp$mtten <- ifelse((pbp$ydstogo > 10), 1, 0)
+
+pbp$ltten <- ifelse((pbp$ydstogo < 10), 1, 0)
+
+pbp$ten <- ifelse((pbp$ydstogo == 10), 1, 0)
+```
+
+
+#```{r}
+pbp %>% 
+select(ydstogo, ltten) %>% 
+filter(ydstogo > 10)
+```
+
+#```{r}
+fgfix <- pbp %>% 
+  filter(series_result == 'Field goal' & play_type != 'no_play') %>% 
+  mutate(newseries = paste0(game_id, sep = "_", series))
+
+```
+
+#```{r}
+series <- unique(fgfix$newseries)
+start <- rep(NA, length(series))
+new_yrd <- stringr::str_split(fgfix$yrdln, " ")
+series_start <- rep(NA,nrow(fgfix))
+for(i in 1:length(series)){
+  if(!is.null(new_yrd[[which(fgfix$newseries == series[i] &
+                               fgfix$down == 1)[1]]])){
+    start[i] <- new_yrd[[which(fgfix$newseries == series[i] &
+                               fgfix$down == 1)[1]]][2]
+  series_start[which(fgfix$newseries == series[i])] <- start[i]
+       }
+
+}
+```
+
+#```{r}
+fgfix$series_start <- series_start
+```
+
+#```{r}
+fgfix$series_start <- as.numeric(fgfix$series_start)
+fgfix$series_success <- ifelse((fgfix$series_start >= 25), 1, 0)
+
+fgfix %>% 
+  select(newseries, down, yrdln, series_start, series_result, series_success)
+```
+
+#```{r}
+
+
+xxx <- pbp %>%
+    select(series_result, series_success, play_type) %>% 
+    filter(series_result == 'Field goal' & play_type != 'no_play')
+
+xxx$series_success <- fgfix$series_success
+
+summary(xxx)
+
+```
+
+#```{r}
+z <- pbp %>%
+  filter(play_type != 'no_play') %>% 
+  select(play_type, series_result, game_id, series) %>% 
+  mutate(newseries = paste0(game_id, sep = "_", series))
+
+series <- unique(z$newseries)
+start <- rep(NA, length(series))
+new_yrd <- stringr::str_split(z$yrdln, " ")
+series_start <- rep(NA,nrow(z))
+for(i in 1:length(series)){
+  if(!is.null(new_yrd[[which(z$newseries == series[i] &
+                               z$down == 1)[1]]])){
+    start[i] <- new_yrd[[which(z$newseries == series[i] &
+                               z$down == 1)[1]]][2]
+  series_start[which(z$newseries == series[i])] <- start[i]
+       }
+
+}
+
+
+```
+
+#```{r}
+
+z$series_start <- series_start
+z$series_start <- as.numeric(z$series_start)
+
+```
+
+#```{r}
+z$series_success <- ifelse((z$series_result == 'Field goal' & z$play_type != 'no_play'), 
+  ifelse((z$series_start >= 25), 1, 0),  
+  z$series_result)
+
+summary(xxx$series_success)
+summary(z$series_success)
+```
+
+#```{r}
+head(pbp)
+zzz <- subset(pbp, pbp$yrdln >= 20 & (pbp$down == 1 | pbp$down == 2) & (pbp$play_type != 'no_play'))
+zzz <- zzz %>% 
+  select(posteam, defteam, yrdln, down, play_type) %>% 
+  separate(yrdln, c('territory', 'yrd'))
+
+zzz
+```
+
+
+#```{r}
+zzz$redzone <- ifelse(((zzz$territory == zzz$defteam) & (zzz$yrd <= 20)), 1, 0)
+zzz %>% 
+  filter(redzone == 1)
+
+```
+
+```{r}
+pbp <- pbp %>% 
+  separate(yrdln, c('territory', 'yrd'))
+
+pbp$redzone <- ifelse(((pbp$territory == pbp$defteam) & (pbp$yrd <= 20)), 1, 0)
+
+```
+
+```{r}
+pbp$series_success <- ifelse(pbp$series_result == 'Field goal', 
+                          ifelse(pbp$redzone == 0, 1, 0),
+                          pbp$series_success)
+```
+
+###w/o fg fix it was 61.61%
+```{r}
+summary(pbp$series_success)
+```
+
+```{r}
+yrs <- c(2006:2020)
+datayrs <- data.frame()
+for (i in yrs) {
+  perteamavgs <- pbp %>%
+    filter(season == i) %>% 
+    group_by(posteam) %>%
+    summarize(proe_avg = mean(pass_oe, na.rm = TRUE),
+            outside_run_rate = mean(OSrun, na.rm = TRUE),
+            inside_run_rate = mean(ISrun, na.rm = TRUE),
+            yards_per_attempt = mean(air_yards, na.rm = TRUE),
+            yac_avg = mean(yards_after_catch, na.rm = TRUE),
+            qb_scramble_rate = mean(qb_scramble, na.rm = TRUE),
+            qb_hit_rate = mean(qb_hit, na.rm = TRUE),
+            qb_sack_rate = mean(sack, na.rm = TRUE),
+            first_down_pass_rate = mean(first_down_pass, na.rm = TRUE),
+            yards_over_sticks = mean(yps, na.rm = TRUE),
+            int_avg = mean(interception, na.rm = TRUE),
+            fumb_avg = mean(fumble_lost, na.rm = TRUE),
+            penyd_avg = mean(penalty_yards, na.rm = TRUE),
+            thrddnconv_avg = mean(third_down_converted, na.rm = TRUE))
+  no_team_name <- perteamavgs %>%
+  select(-posteam) %>%
+  scale()
+
+  datax <- data.frame(t(no_team_name))
+  datayrs <- dplyr::bind_rows(datayrs, datax)
+
+}
+```
+
+#```{r}
+for (i in 1999:2020){
+  print(i)
+  rownames(datayrs) <- gsub('[.0-9]*', i, rownames(datayrs))
+}
+```
+
+```{r}
+#datayrs$col <- gsub('[.0-9]*', '', rownames(datayrs))
+n <- 15
+datayrs2 <- split(datayrs, factor(sort(rank(row.names(datayrs))%%n)))
+```
+
+
+```{r}
+names(datayrs2) <- paste0("data",2006:2020)
+names(datayrs2)
+```
+
+```{r}
+
+```
+
+```{r}
+t(datayrs2$data2009)
+```
+
+```{r}
+#z <- rownames(datayrs)
+#by(datayrs, rownames(datayrs), function(x) {gsub('[.0-9]*', '', rownames(datayrs))})
+#lapply(z, function(x) gsub('[.0-9]*', '', z))
+
+```
+
+```{r}
+data2006 <- datayrs2$data2006
+rownames(data2006) <- gsub('[.0-9]*', '', rownames(data2006))
+data2007 <- datayrs2$data2007
+rownames(data2007) <- gsub('[.0-9]*', '', rownames(data2007))
+data2008 <- datayrs2$data2008
+rownames(data2008) <- gsub('[.0-9]*', '', rownames(data2008))
+data2009 <- datayrs2$data2009
+rownames(data2009) <- gsub('[.0-9]*', '', rownames(data2009))
+data2010 <- datayrs2$data2010
+rownames(data2010) <- gsub('[.0-9]*', '', rownames(data2010))
+data2011 <- datayrs2$data2011
+rownames(data2011) <- gsub('[.0-9]*', '', rownames(data2011))
+data2012 <- datayrs2$data2012
+rownames(data2012) <- gsub('[.0-9]*', '', rownames(data2012))
+data2013 <- datayrs2$data2013
+rownames(data2013) <- gsub('[.0-9]*', '', rownames(data2013))
+data2014 <- datayrs2$data2014
+rownames(data2014) <- gsub('[.0-9]*', '', rownames(data2014))
+data2015 <- datayrs2$data2015
+rownames(data2015) <- gsub('[.0-9]*', '', rownames(data2015))
+data2016 <- datayrs2$data2016
+rownames(data2016) <- gsub('[.0-9]*', '', rownames(data2016))
+data2017 <- datayrs2$data2017
+rownames(data2017) <- gsub('[.0-9]*', '', rownames(data2017))
+data2018 <- datayrs2$data2018
+rownames(data2018) <- gsub('[.0-9]*', '', rownames(data2018))
+data2019 <- datayrs2$data2019
+rownames(data2019) <- gsub('[.0-9]*', '', rownames(data2019))
+data2020 <- datayrs2$data2020
+rownames(data2020) <- gsub('[.0-9]*', '', rownames(data2020))
+```
+
+```{r}
+lambda1 <- lambda1_calculator(pdat1 = data2006, pdat2 = data2007 ,
+ ncluster=4, alpha1 = 0.5, nboot1 = 1000)
+
+lambda2 <- lambda2_calculator(pdat1 = data2006, pdat2 = data2007,
+ ncluster = 4, alpha2 = 0.5, nboot2 = 1000)
+
+sdc_res <- sparsedc_cluster(pdat1 = data2006, pdat2 = data2007, ncluster = 4,
+lambda1 = lambda1/3, lambda2 = lambda2*1.25, nitter = 20, nstarts =50)
+```
+
+```{r}
+clusters_2006 <- sdc_res$clusters1 
+clusters_2007 <- sdc_res$clusters1 
+centers_2006 <- sdc_res$centers2
+centers_2007 <- sdc_res$centers2
+rownames(centers_2006) <- colnames(no_team_name)
+rownames(centers_2007) <- colnames(no_team_name)
+```
+
+```{r}
+lambda1 <- lambda1_calculator(pdat1 = data2007, pdat2 = data2008,
+ ncluster=4, alpha1 = 0.5, nboot1 = 1000)
+lambda2 <- lambda2_calculator(pdat1 = data2007, pdat2 = data2008,
+ ncluster = 4, alpha2 = 0.5, nboot2 = 1000)
+sdc_res <- sparsedc_cluster(pdat1 = data2007, pdat2 = data2008, ncluster = 4,
+lambda1 = lambda1/3, lambda2 = lambda2*1.25, nitter = 20, nstarts =50)
+```
+
+```{r}
+clusters_2008 <- sdc_res$clusters2
+centers_2008 <- sdc_res$centers2
+rownames(centers_2008) <- colnames(no_team_name)
+```
+
+```{r}
+lambda1 <- lambda1_calculator(pdat1 = data2008, pdat2 = data2009,
+ ncluster=4, alpha1 = 0.5, nboot1 = 1000)
+lambda2 <- lambda2_calculator(pdat1 = data2008, pdat2 = data2009,
+ ncluster = 4, alpha2 = 0.5, nboot2 = 1000)
+sdc_res <- sparsedc_cluster(pdat1 = data2008, pdat2 = data2009, ncluster = 4,
+lambda1 = lambda1/3, lambda2 = lambda2*1.25, nitter = 20, nstarts =50)
+```
+
+```{r}
+clusters_2009 <- sdc_res$clusters2
+centers_2009 <- sdc_res$centers2
+rownames(centers_2009) <- colnames(no_team_name)
+```
+
+```{r}
+lambda1 <- lambda1_calculator(pdat1 = data2009, pdat2 = data2010,
+ ncluster=4, alpha1 = 0.5, nboot1 = 1000)
+lambda2 <- lambda2_calculator(pdat1 = data2009, pdat2 = data2010,
+ ncluster = 4, alpha2 = 0.5, nboot2 = 1000)
+sdc_res <- sparsedc_cluster(pdat1 = data2009, pdat2 = data2010, ncluster = 4,
+lambda1 = lambda1/3, lambda2 = lambda2*1.25, nitter = 20, nstarts =50)
+```
+
+```{r}
+clusters_2010 <- sdc_res$clusters2
+centers_2010 <- sdc_res$centers2
+rownames(centers_2010) <- colnames(no_team_name)
+```
+
+```{r}
+lambda1 <- lambda1_calculator(pdat1 = data2010, pdat2 = data2011,
+ ncluster=4, alpha1 = 0.5, nboot1 = 1000)
+lambda2 <- lambda2_calculator(pdat1 = data2010, pdat2 = data2011,
+ ncluster = 4, alpha2 = 0.5, nboot2 = 1000)
+sdc_res <- sparsedc_cluster(pdat1 = data2010, pdat2 = data2011, ncluster = 4,
+lambda1 = lambda1/3, lambda2 = lambda2*1.25, nitter = 20, nstarts =50)
+```
+
+```{r}
+clusters_2011 <- sdc_res$clusters2
+centers_2011 <- sdc_res$centers2
+rownames(centers_2011) <- colnames(no_team_name)
+```
+
+```{r}
+lambda1 <- lambda1_calculator(pdat1 = data2011, pdat2 = data2012,
+ ncluster=4, alpha1 = 0.5, nboot1 = 1000)
+lambda2 <- lambda2_calculator(pdat1 = data2011, pdat2 = data2012,
+ ncluster = 4, alpha2 = 0.5, nboot2 = 1000)
+sdc_res <- sparsedc_cluster(pdat1 = data2011, pdat2 = data2012, ncluster = 4,
+lambda1 = lambda1/3, lambda2 = lambda2*1.25, nitter = 20, nstarts =50)
+```
+
+```{r}
+clusters_2012 <- sdc_res$clusters2
+centers_2012 <- sdc_res$centers2
+rownames(centers_2012) <- colnames(no_team_name)
+```
+
+```{r}
+lambda1 <- lambda1_calculator(pdat1 = data2012, pdat2 = data2013,
+ ncluster=4, alpha1 = 0.5, nboot1 = 1000)
+lambda2 <- lambda2_calculator(pdat1 = data2012, pdat2 = data2013,
+ ncluster = 4, alpha2 = 0.5, nboot2 = 1000)
+sdc_res <- sparsedc_cluster(pdat1 = data2012, pdat2 = data2013, ncluster = 4,
+lambda1 = lambda1/3, lambda2 = lambda2*1.25, nitter = 20, nstarts =50)
+```
+
+```{r}
+clusters_2013 <- sdc_res$clusters2
+centers_2013 <- sdc_res$centers2
+rownames(centers_2013) <- colnames(no_team_name)
+```
+
+```{r}
+lambda1 <- lambda1_calculator(pdat1 = data2013, pdat2 = data2014,
+ ncluster=4, alpha1 = 0.5, nboot1 = 1000)
+lambda2 <- lambda2_calculator(pdat1 = data2013, pdat2 = data2014,
+ ncluster = 4, alpha2 = 0.5, nboot2 = 1000)
+sdc_res <- sparsedc_cluster(pdat1 = data2013, pdat2 = data2014, ncluster = 4,
+lambda1 = lambda1/3, lambda2 = lambda2*1.25, nitter = 20, nstarts =50)
+```
+
+```{r}
+clusters_2014 <- sdc_res$clusters2
+centers_2014 <- sdc_res$centers2
+rownames(centers_2014) <- colnames(no_team_name)
+```
+
+```{r}
+lambda1 <- lambda1_calculator(pdat1 = data2014, pdat2 = data2015,
+ ncluster=4, alpha1 = 0.5, nboot1 = 1000)
+lambda2 <- lambda2_calculator(pdat1 = data2014, pdat2 = data2015,
+ ncluster = 4, alpha2 = 0.5, nboot2 = 1000)
+sdc_res <- sparsedc_cluster(pdat1 = data2014, pdat2 = data2015, ncluster = 4,
+lambda1 = lambda1/3, lambda2 = lambda2*1.25, nitter = 20, nstarts =50)
+```
+
+```{r}
+clusters_2015 <- sdc_res$clusters2
+centers_2015 <- sdc_res$centers2
+rownames(centers_2015) <- colnames(no_team_name)
+```
+
+```{r}
+lambda1 <- lambda1_calculator(pdat1 = data2015, pdat2 = data2016,
+ ncluster=4, alpha1 = 0.5, nboot1 = 1000)
+lambda2 <- lambda2_calculator(pdat1 = data2015, pdat2 = data2016,
+ ncluster = 4, alpha2 = 0.5, nboot2 = 1000)
+sdc_res <- sparsedc_cluster(pdat1 = data2015, pdat2 = data2016, ncluster = 4,
+lambda1 = lambda1/3, lambda2 = lambda2*1.25, nitter = 20, nstarts =50)
+```
+
+```{r}
+clusters_2016 <- sdc_res$clusters2
+centers_2016 <- sdc_res$centers2
+rownames(centers_2016) <- colnames(no_team_name)
+```
+
+```{r}
+lambda1 <- lambda1_calculator(pdat1 = data2016, pdat2 = data2017,
+ ncluster=4, alpha1 = 0.5, nboot1 = 1000)
+lambda2 <- lambda2_calculator(pdat1 = data2016, pdat2 = data2017,
+ ncluster = 4, alpha2 = 0.5, nboot2 = 1000)
+sdc_res <- sparsedc_cluster(pdat1 = data2016, pdat2 = data2017, ncluster = 4,
+lambda1 = lambda1/3, lambda2 = lambda2*1.25, nitter = 20, nstarts =50)
+```
+
+```{r}
+clusters_2017 <- sdc_res$clusters2
+centers_2017 <- sdc_res$centers2
+rownames(centers_2017) <- colnames(no_team_name)
+```
+
+```{r}
+lambda1 <- lambda1_calculator(pdat1 = data2017, pdat2 = data2018,
+ ncluster=4, alpha1 = 0.5, nboot1 = 1000)
+lambda2 <- lambda2_calculator(pdat1 = data2017, pdat2 = data2018,
+ ncluster = 4, alpha2 = 0.5, nboot2 = 1000)
+sdc_res <- sparsedc_cluster(pdat1 = data2017, pdat2 = data2018, ncluster = 4,
+lambda1 = lambda1/3, lambda2 = lambda2*1.25, nitter = 20, nstarts =50)
+```
+
+```{r}
+clusters_2018 <- sdc_res$clusters2
+centers_2018 <- sdc_res$centers2
+rownames(centers_2018) <- colnames(no_team_name)
+```
+
+```{r}
+lambda1 <- lambda1_calculator(pdat1 = data2018, pdat2 = data2019,
+ ncluster=4, alpha1 = 0.5, nboot1 = 1000)
+lambda2 <- lambda2_calculator(pdat1 = data2018, pdat2 = data2019,
+ ncluster = 4, alpha2 = 0.5, nboot2 = 1000)
+sdc_res <- sparsedc_cluster(pdat1 = data2018, pdat2 = data2019, ncluster = 4,
+lambda1 = lambda1/3, lambda2 = lambda2*1.25, nitter = 20, nstarts =50)
+```
+
+```{r}
+clusters_2019 <- sdc_res$clusters2
+centers_2019 <- sdc_res$centers2
+rownames(centers_2019) <- colnames(no_team_name)
+```
+
+```{r}
+lambda1 <- lambda1_calculator(pdat1 = data2019, pdat2 = data2020,
+ ncluster=4, alpha1 = 0.5, nboot1 = 1000)
+lambda2 <- lambda2_calculator(pdat1 = data2019, pdat2 = data2020,
+ ncluster = 4, alpha2 = 0.5, nboot2 = 1000)
+sdc_res <- sparsedc_cluster(pdat1 = data2019, pdat2 = data2020, ncluster = 4,
+lambda1 = lambda1/3, lambda2 = lambda2*1.25, nitter = 20, nstarts =50)
+```
+
+```{r}
+clusters_2020 <- sdc_res$clusters2
+centers_2020 <- sdc_res$centers2
+rownames(centers_2020) <- colnames(no_team_name)
+```
+
+```{r}
+centers_2006
+centers_2007
+centers_2008
+centers_2009
+centers_2010
+centers_2011
+centers_2012
+centers_2013
+centers_2014
+centers_2015
+centers_2016
+centers_2017
+centers_2018
+centers_2019
+centers_2020
+```
+
+```{r}
+f <- cbind.data.frame(perteamavgs$posteam, clusters_2006, clusters_2007, clusters_2008, clusters_2009, clusters_2010, clusters_2011, clusters_2012, clusters_2013, clusters_2014, clusters_2015, clusters_2016, clusters_2017, clusters_2018, clusters_2019, clusters_2020)
+
+rownames(f) <- f$`perteamavgs$posteam`
+
+f <- f[2:16]
+fx <- as.data.frame(t(f))
+fx$year <- rownames(fx)
+fx$year <- substr(fx$year, 10,13)
+fx <- melt(fx, id.vars=c("year"))
+```
+
+```{r}
+fx$value[fx$year == 2006 & fx$value == 1] = 'Damage Control'
+fx$value[fx$year == 2006 & fx$value == 2] = 'Balance'
+fx$value[fx$year == 2006 & fx$value == 3] = 'Shots'
+fx$value[fx$year == 2006 & fx$value == 4] = 'Ground & Pound'
+
+fx$value[fx$year == 2007 & fx$value == 1] = 'Damage Control'
+fx$value[fx$year == 2007 & fx$value == 2] = 'Balance'
+fx$value[fx$year == 2007 & fx$value == 3] = 'Shots'
+fx$value[fx$year == 2007 & fx$value == 4] = 'Ground & Pound'
+
+fx$value[fx$year == 2008 & fx$value == 1] = 'Balance'
+fx$value[fx$year == 2008 & fx$value == 2] = 'Ground & Pound'
+fx$value[fx$year == 2008 & fx$value == 3] = 'Shots'
+fx$value[fx$year == 2008 & fx$value == 4] = 'Damage Control'
+
+fx$value[fx$year == 2009 & fx$value == 1] = 'Shots'
+fx$value[fx$year == 2009 & fx$value == 2] = 'Damage Control'
+fx$value[fx$year == 2009 & fx$value == 3] = 'Ground & Pound'
+fx$value[fx$year == 2009 & fx$value == 4] = 'Balance'
+
+fx$value[fx$year == 2010 & fx$value == 1] = 'Balance'
+fx$value[fx$year == 2010 & fx$value == 2] = 'Damage Control'
+fx$value[fx$year == 2010 & fx$value == 3] = 'Shots'
+fx$value[fx$year == 2010 & fx$value == 4] = 'Ground & Pound'
+
+fx$value[fx$year == 2011 & fx$value == 1] = 'Balance'
+fx$value[fx$year == 2011 & fx$value == 2] = 'Damage Control'
+fx$value[fx$year == 2011 & fx$value == 3] = 'Ground & Pound'
+fx$value[fx$year == 2011 & fx$value == 4] = 'Shots'
+
+fx$value[fx$year == 2012 & fx$value == 1] = 'Ground & Pound'
+fx$value[fx$year == 2012 & fx$value == 2] = 'Balance'
+fx$value[fx$year == 2012 & fx$value == 3] = 'Shots'
+fx$value[fx$year == 2012 & fx$value == 4] = 'Damage Control'
+
+fx$value[fx$year == 2013 & fx$value == 1] = 'Balance'
+fx$value[fx$year == 2013 & fx$value == 2] = 'Ground & Pound'
+fx$value[fx$year == 2013 & fx$value == 3] = 'Damage Control'
+fx$value[fx$year == 2013 & fx$value == 4] = 'Shots'
+
+fx$value[fx$year == 2014 & fx$value == 1] = 'Damage Control'
+fx$value[fx$year == 2014 & fx$value == 2] = 'Ground & Pound'
+fx$value[fx$year == 2014 & fx$value == 3] = 'Shots'
+fx$value[fx$year == 2014 & fx$value == 4] = 'Balance'
+
+fx$value[fx$year == 2015 & fx$value == 1] = 'Balance'
+fx$value[fx$year == 2015 & fx$value == 2] = 'Damage Control'
+fx$value[fx$year == 2015 & fx$value == 3] = 'Ground & Pound'
+fx$value[fx$year == 2015 & fx$value == 4] = 'Shots'
+
+fx$value[fx$year == 2016 & fx$value == 1] = 'Damage Control'
+fx$value[fx$year == 2016 & fx$value == 2] = 'Shots'
+fx$value[fx$year == 2016 & fx$value == 3] = 'Balance'
+fx$value[fx$year == 2016 & fx$value == 4] = 'Ground & Pound'
+
+fx$value[fx$year == 2017 & fx$value == 1] = 'Damage Control'
+fx$value[fx$year == 2017 & fx$value == 2] = 'Shots'
+fx$value[fx$year == 2017 & fx$value == 3] = 'Balance'
+fx$value[fx$year == 2017 & fx$value == 4] = 'Ground & Pound'
+
+fx$value[fx$year == 2018 & fx$value == 1] = 'Shots'
+fx$value[fx$year == 2018 & fx$value == 2] = 'Damage Control'
+fx$value[fx$year == 2018 & fx$value == 3] = 'Balance'
+fx$value[fx$year == 2018 & fx$value == 4] = 'Ground & Pound'
+
+fx$value[fx$year == 2019 & fx$value == 1] = 'Shots'
+fx$value[fx$year == 2019 & fx$value == 2] = 'Balance'
+fx$value[fx$year == 2019 & fx$value == 3] = 'Ground & Pound'
+fx$value[fx$year == 2019 & fx$value == 4] = 'Damage Control'
+
+fx$value[fx$year == 2020 & fx$value == 1] = 'Ground & Pound'
+fx$value[fx$year == 2020 & fx$value == 2] = 'Balance'
+fx$value[fx$year == 2020 & fx$value == 3] = 'Shots'
+fx$value[fx$year == 2020 & fx$value == 4] = 'Damage Control'
+```
+
+```{r}
+fxnw <- fx[fx$variable == 'ARI' | fx$variable == 'LA' | fx$variable == 'SEA' | fx$variable == 'SF', ]
+fxnn <- fx[fx$variable == 'GB' | fx$variable == 'CHI' | fx$variable == 'MIN' | fx$variable == 'DET', ]
+fxns <- fx[fx$variable == 'NO' | fx$variable == 'TB' | fx$variable == 'CAR' | fx$variable == 'ATL', ]
+fxne <- fx[fx$variable == 'NYG' | fx$variable == 'WAS' | fx$variable == 'DAL' | fx$variable == 'PHI', ]
+fxaw <- fx[fx$variable == 'DEN' | fx$variable == 'LAC' | fx$variable == 'LV' | fx$variable == 'KC', ]
+fxan <- fx[fx$variable == 'CIN' | fx$variable == 'CLE' | fx$variable == 'PIT' | fx$variable == 'BAL', ]
+fxas <- fx[fx$variable == 'IND' | fx$variable == 'TEN' | fx$variable == 'JAX' | fx$variable == 'HOU', ]
+fxae <- fx[fx$variable == 'NE' | fx$variable == 'NYJ' | fx$variable == 'BUF' | fx$variable == 'MIA', ]
+gfxnw <- ggplot(fxnw, aes(x=as.numeric(year), y=value, group=variable, color= variable)) + 
+  geom_line() 
+gfxnw <- gfxnw + scale_x_continuous(breaks = as.numeric(fxnw$year)) + ggtitle("NFC West") + xlab("Years") + ylab("Clusters")
+gfxnn <- ggplot(fxnn, aes(x=as.numeric(year), y=value, group=variable, color=variable)) + 
+  geom_line() 
+gfxnn <- gfxnn + scale_x_continuous(breaks = as.numeric(fxnn$year)) + ggtitle("NFC North") + xlab("Years") + ylab("Clusters")
+gfxns <- ggplot(fxns, aes(x=as.numeric(year), y=value, group=variable, color=variable)) + 
+  geom_line() 
+gfxns <- gfxns + scale_x_continuous(breaks = as.numeric(fxns$year)) + ggtitle("NFC South") + xlab("Years") + ylab("Clusters")
+gfxne <- ggplot(fxne, aes(x=as.numeric(year), y=value, group=variable, color=variable)) + 
+  geom_line() 
+gfxne <- gfxne + scale_x_continuous(breaks = as.numeric(fxne$year)) + ggtitle("NFC East") + xlab("Years") + ylab("Clusters")
+gfxaw <- ggplot(fxaw, aes(x=as.numeric(year), y=value, group=variable, color=variable)) + 
+  geom_line() 
+gfxaw <- gfxaw + scale_x_continuous(breaks = as.numeric(fxaw$year)) + ggtitle("AFC West") + xlab("Years") + ylab("Clusters")
+gfxan <- ggplot(fxan, aes(x=as.numeric(year), y=value, group=variable, color=variable)) + 
+  geom_line() 
+gfxan <- gfxan + scale_x_continuous(breaks = as.numeric(fxan$year)) + ggtitle("AFC North") + xlab("Years") + ylab("Clusters")
+gfxas <- ggplot(fxas, aes(x=as.numeric(year), y=value, group=variable, color=variable)) + 
+  geom_line() 
+gfxas <- gfxas + scale_x_continuous(breaks = as.numeric(fxas$year)) + ggtitle("AFC South") + xlab("Years") + ylab("Clusters")
+gfxae <- ggplot(fxae, aes(x=as.numeric(year), y=value, group=variable, color=variable)) + 
+  geom_line() 
+gfxae <- gfxae + scale_x_continuous(breaks = as.numeric(fxae$year)) + ggtitle("AFC East") + xlab("Years") + ylab("Clusters") 
+```
+
+```{r}
+gfxnn
+gfxns
+gfxne
+gfxnw
+gfxan
+gfxas
+gfxae
+gfxaw
+```
+
+```{r}
+yrsdef <- c(2006:2020)
+datayrsdef <- data.frame()
+for (i in yrsdef) {
+  defavgs <- pbp %>%
+    filter(season == i) %>% 
+    group_by(defteam) %>%
+    summarize(qb_scramble_rate = mean(qb_scramble, na.rm = TRUE),
+            qb_hit_rate = mean(qb_hit, na.rm = TRUE),
+            qb_sack_rate = mean(sack, na.rm = TRUE),
+            int_avg = mean(interception, na.rm = TRUE),
+            fumb_avg = mean(fumble_lost, na.rm = TRUE),
+            thrddnconv_avg = mean(third_down_converted, na.rm = TRUE),
+            passyd_avg = mean(passing_yards, na.rm = TRUE),
+            runyd_avg = mean(rushing_yards, na.rm = TRUE),
+            exp_avg = mean(explosive, na.rm = TRUE))
+  defno_team_name <- defavgs %>%
+  select(-defteam) %>%
+  scale()
+
+  datadef <- data.frame(t(defno_team_name))
+  datayrsdef <- dplyr::bind_rows(datayrsdef, datadef)
+}
+```
+
+```{r}
+n <- 15
+defdatayrs2 <- split(datayrsdef, factor(sort(rank(row.names(datayrsdef))%%n)))
+```
+
+```{r}
+names(defdatayrs2) <- paste0("defdata",2006:2020)
+names(defdatayrs2)
+```
+
+```{r}
+defdata2006 <- defdatayrs2$defdata2006
+rownames(defdata2006) <- gsub('[.0-9]*', '', rownames(defdata2006))
+defdata2007 <- defdatayrs2$defdata2007
+rownames(defdata2007) <- gsub('[.0-9]*', '', rownames(defdata2007))
+defdata2008 <- defdatayrs2$defdata2008
+rownames(defdata2008) <- gsub('[.0-9]*', '', rownames(defdata2008))
+defdata2009 <- defdatayrs2$defdata2009
+rownames(defdata2009) <- gsub('[.0-9]*', '', rownames(defdata2009))
+defdata2010 <- defdatayrs2$defdata2010
+rownames(defdata2010) <- gsub('[.0-9]*', '', rownames(defdata2010))
+defdata2011 <- defdatayrs2$defdata2011
+rownames(defdata2011) <- gsub('[.0-9]*', '', rownames(defdata2011))
+defdata2012 <- defdatayrs2$defdata2012
+rownames(defdata2012) <- gsub('[.0-9]*', '', rownames(defdata2012))
+defdata2013 <- defdatayrs2$defdata2013
+rownames(defdata2013) <- gsub('[.0-9]*', '', rownames(defdata2013))
+defdata2014 <- defdatayrs2$defdata2014
+rownames(defdata2014) <- gsub('[.0-9]*', '', rownames(defdata2014))
+defdata2015 <- defdatayrs2$defdata2015
+rownames(defdata2015) <- gsub('[.0-9]*', '', rownames(defdata2015))
+defdata2016 <- defdatayrs2$defdata2016
+rownames(defdata2016) <- gsub('[.0-9]*', '', rownames(defdata2016))
+defdata2017 <- defdatayrs2$defdata2017
+rownames(defdata2017) <- gsub('[.0-9]*', '', rownames(defdata2017))
+defdata2018 <- defdatayrs2$defdata2018
+rownames(defdata2018) <- gsub('[.0-9]*', '', rownames(defdata2018))
+defdata2019 <- defdatayrs2$defdata2019
+rownames(defdata2019) <- gsub('[.0-9]*', '', rownames(defdata2019))
+defdata2020 <- defdatayrs2$defdata2020
+rownames(defdata2020) <- gsub('[.0-9]*', '', rownames(defdata2020))
+```
+
+
+```{r}
+lambda1 <- lambda1_calculator(pdat1 = defdata2006, pdat2 = defdata2007 ,
+ ncluster=4, alpha1 = 0.5, nboot1 = 1000)
+```
+
+```{r}
+lambda2 <- lambda2_calculator(pdat1 = defdata2006, pdat2 = defdata2007,
+ ncluster = 4, alpha2 = 0.5, nboot2 = 1000)
+```
+
+```{r}
+sdc_res <- sparsedc_cluster(pdat1 = defdata2006, pdat2 = defdata2007, ncluster = 4,
+lambda1 = lambda1/3, lambda2 = lambda2*1.25, nitter = 20, nstarts =50)
+```
+
+```{r}
+defclusters_2006 <- sdc_res$clusters1 
+defclusters_2007 <- sdc_res$clusters1 
+defcenters_2006 <- sdc_res$centers2
+defcenters_2007 <- sdc_res$centers2
+rownames(defcenters_2006) <- colnames(defno_team_name)
+rownames(defcenters_2007) <- colnames(defno_team_name)
+```
+
+
+
+```{r}
+lambda1 <- lambda1_calculator(pdat1 = defdata2007, pdat2 = defdata2008,
+ ncluster=4, alpha1 = 0.5, nboot1 = 1000)
+```
+
+```{r}
+lambda2 <- lambda2_calculator(pdat1 = defdata2007, pdat2 = defdata2008,
+ ncluster = 4, alpha2 = 0.5, nboot2 = 1000)
+```
+
+```{r}
+sdc_res <- sparsedc_cluster(pdat1 = defdata2007, pdat2 = defdata2008, ncluster = 4,
+lambda1 = lambda1/3, lambda2 = lambda2*1.25, nitter = 20, nstarts =50)
+```
+
+```{r}
+defclusters_2008 <- sdc_res$clusters2
+defcenters_2008 <- sdc_res$centers2
+rownames(defcenters_2008) <- colnames(defno_team_name)
+```
+
+
+
+```{r}
+lambda1 <- lambda1_calculator(pdat1 = defdata2008, pdat2 = defdata2009,
+ ncluster=4, alpha1 = 0.5, nboot1 = 1000)
+```
+
+```{r}
+lambda2 <- lambda2_calculator(pdat1 = defdata2008, pdat2 = defdata2009,
+ ncluster = 4, alpha2 = 0.5, nboot2 = 1000)
+```
+
+```{r}
+sdc_res <- sparsedc_cluster(pdat1 = defdata2008, pdat2 = defdata2009, ncluster = 4,
+lambda1 = lambda1/3, lambda2 = lambda2*1.25, nitter = 20, nstarts =50)
+```
+
+```{r}
+defclusters_2009 <- sdc_res$clusters2
+defcenters_2009 <- sdc_res$centers2
+rownames(defcenters_2009) <- colnames(defno_team_name)
+```
+
+
+
+```{r}
+lambda1 <- lambda1_calculator(pdat1 = defdata2009, pdat2 = defdata2010,
+ ncluster=4, alpha1 = 0.5, nboot1 = 1000)
+```
+
+```{r}
+lambda2 <- lambda2_calculator(pdat1 = defdata2009, pdat2 = defdata2010,
+ ncluster = 4, alpha2 = 0.5, nboot2 = 1000)
+```
+
+```{r}
+sdc_res <- sparsedc_cluster(pdat1 = defdata2009, pdat2 = defdata2010, ncluster = 4,
+lambda1 = lambda1/3, lambda2 = lambda2*1.25, nitter = 20, nstarts =50)
+```
+
+```{r}
+defclusters_2010 <- sdc_res$clusters2
+defcenters_2010 <- sdc_res$centers2
+rownames(defcenters_2010) <- colnames(defno_team_name)
+```
+
+
+
+```{r}
+lambda1 <- lambda1_calculator(pdat1 = defdata2010, pdat2 = defdata2011,
+ ncluster=4, alpha1 = 0.5, nboot1 = 1000)
+```
+
+```{r}
+lambda2 <- lambda2_calculator(pdat1 = defdata2010, pdat2 = defdata2011,
+ ncluster = 4, alpha2 = 0.5, nboot2 = 1000)
+```
+
+```{r}
+sdc_res <- sparsedc_cluster(pdat1 = defdata2010, pdat2 = defdata2011, ncluster = 4,
+lambda1 = lambda1/3, lambda2 = lambda2*1.25, nitter = 20, nstarts =50)
+```
+
+```{r}
+defclusters_2011 <- sdc_res$clusters2
+defcenters_2011 <- sdc_res$centers2
+rownames(defcenters_2011) <- colnames(defno_team_name)
+```
+
+
+
+```{r}
+lambda1 <- lambda1_calculator(pdat1 = defdata2011, pdat2 = defdata2012,
+ ncluster=4, alpha1 = 0.5, nboot1 = 1000)
+```
+
+```{r}
+lambda2 <- lambda2_calculator(pdat1 = defdata2011, pdat2 = defdata2012,
+ ncluster = 4, alpha2 = 0.5, nboot2 = 1000)
+```
+
+```{r}
+sdc_res <- sparsedc_cluster(pdat1 = defdata2011, pdat2 = defdata2012, ncluster = 4,
+lambda1 = lambda1/3, lambda2 = lambda2*1.25, nitter = 20, nstarts =50)
+```
+
+```{r}
+defclusters_2012 <- sdc_res$clusters2
+defcenters_2012 <- sdc_res$centers2
+rownames(defcenters_2012) <- colnames(defno_team_name)
+```
+
+
+
+```{r}
+lambda1 <- lambda1_calculator(pdat1 = defdata2012, pdat2 = defdata2013,
+ ncluster=4, alpha1 = 0.5, nboot1 = 1000)
+```
+
+```{r}
+lambda2 <- lambda2_calculator(pdat1 = defdata2012, pdat2 = defdata2013,
+ ncluster = 4, alpha2 = 0.5, nboot2 = 1000)
+```
+
+```{r}
+sdc_res <- sparsedc_cluster(pdat1 = defdata2012, pdat2 = defdata2013, ncluster = 4,
+lambda1 = lambda1/3, lambda2 = lambda2*1.25, nitter = 20, nstarts =50)
+```
+
+```{r}
+defclusters_2013 <- sdc_res$clusters2
+defcenters_2013 <- sdc_res$centers2
+rownames(defcenters_2013) <- colnames(defno_team_name)
+```
+
+
+
+```{r}
+lambda1 <- lambda1_calculator(pdat1 = defdata2013, pdat2 = defdata2014,
+ ncluster=4, alpha1 = 0.5, nboot1 = 1000)
+```
+
+```{r}
+lambda2 <- lambda2_calculator(pdat1 = defdata2013, pdat2 = defdata2014,
+ ncluster = 4, alpha2 = 0.5, nboot2 = 1000)
+```
+
+```{r}
+sdc_res <- sparsedc_cluster(pdat1 = defdata2013, pdat2 = defdata2014, ncluster = 4,
+lambda1 = lambda1/3, lambda2 = lambda2*1.25, nitter = 20, nstarts =50)
+```
+
+```{r}
+defclusters_2014 <- sdc_res$clusters2
+defcenters_2014 <- sdc_res$centers2
+rownames(defcenters_2014) <- colnames(defno_team_name)
+```
+
+
+
+```{r}
+lambda1 <- lambda1_calculator(pdat1 = defdata2014, pdat2 = defdata2015,
+ ncluster=4, alpha1 = 0.5, nboot1 = 1000)
+```
+
+```{r}
+lambda2 <- lambda2_calculator(pdat1 = defdata2014, pdat2 = defdata2015,
+ ncluster = 4, alpha2 = 0.5, nboot2 = 1000)
+```
+
+```{r}
+sdc_res <- sparsedc_cluster(pdat1 = defdata2014, pdat2 = defdata2015, ncluster = 4,
+lambda1 = lambda1/3, lambda2 = lambda2*1.25, nitter = 20, nstarts =50)
+```
+
+```{r}
+defclusters_2015 <- sdc_res$clusters2
+defcenters_2015 <- sdc_res$centers2
+rownames(defcenters_2015) <- colnames(defno_team_name)
+```
+
+
+
+```{r}
+lambda1 <- lambda1_calculator(pdat1 = defdata2015, pdat2 = defdata2016,
+ ncluster=4, alpha1 = 0.5, nboot1 = 1000)
+```
+
+```{r}
+lambda2 <- lambda2_calculator(pdat1 = defdata2015, pdat2 = defdata2016,
+ ncluster = 4, alpha2 = 0.5, nboot2 = 1000)
+```
+
+```{r}
+sdc_res <- sparsedc_cluster(pdat1 = defdata2015, pdat2 = defdata2016, ncluster = 4,
+lambda1 = lambda1/3, lambda2 = lambda2*1.25, nitter = 20, nstarts =50)
+```
+
+```{r}
+defclusters_2016 <- sdc_res$clusters2
+defcenters_2016 <- sdc_res$centers2
+rownames(defcenters_2016) <- colnames(defno_team_name)
+```
+
+
+
+```{r}
+lambda1 <- lambda1_calculator(pdat1 = defdata2016, pdat2 = defdata2017,
+ ncluster=4, alpha1 = 0.5, nboot1 = 1000)
+```
+
+```{r}
+lambda2 <- lambda2_calculator(pdat1 = defdata2016, pdat2 = defdata2017,
+ ncluster = 4, alpha2 = 0.5, nboot2 = 1000)
+```
+
+```{r}
+sdc_res <- sparsedc_cluster(pdat1 = defdata2016, pdat2 = defdata2017, ncluster = 4,
+lambda1 = lambda1/3, lambda2 = lambda2*1.25, nitter = 20, nstarts =50)
+```
+
+```{r}
+defclusters_2017 <- sdc_res$clusters2
+defcenters_2017 <- sdc_res$centers2
+rownames(defcenters_2017) <- colnames(defno_team_name)
+```
+
+
+
+```{r}
+lambda1 <- lambda1_calculator(pdat1 = defdata2017, pdat2 = defdata2018,
+ ncluster=4, alpha1 = 0.5, nboot1 = 1000)
+```
+
+```{r}
+lambda2 <- lambda2_calculator(pdat1 = defdata2017, pdat2 = defdata2018,
+ ncluster = 4, alpha2 = 0.5, nboot2 = 1000)
+```
+
+```{r}
+sdc_res <- sparsedc_cluster(pdat1 = defdata2017, pdat2 = defdata2018, ncluster = 4,
+lambda1 = lambda1/3, lambda2 = lambda2*1.25, nitter = 20, nstarts =50)
+```
+
+```{r}
+defclusters_2018 <- sdc_res$clusters2
+defcenters_2018 <- sdc_res$centers2
+rownames(defcenters_2018) <- colnames(defno_team_name)
+```
+
+
+
+```{r}
+lambda1 <- lambda1_calculator(pdat1 = defdata2018, pdat2 = defdata2019,
+ ncluster=4, alpha1 = 0.5, nboot1 = 1000)
+```
+
+```{r}
+lambda2 <- lambda2_calculator(pdat1 = defdata2018, pdat2 = defdata2019,
+ ncluster = 4, alpha2 = 0.5, nboot2 = 1000)
+```
+
+```{r}
+sdc_res <- sparsedc_cluster(pdat1 = defdata2018, pdat2 = defdata2019, ncluster = 4,
+lambda1 = lambda1/3, lambda2 = lambda2*1.25, nitter = 20, nstarts =50)
+```
+
+```{r}
+defclusters_2019 <- sdc_res$clusters2
+defcenters_2019 <- sdc_res$centers2
+rownames(defcenters_2019) <- colnames(defno_team_name)
+```
+
+
+
+```{r}
+lambda1 <- lambda1_calculator(pdat1 = defdata2019, pdat2 = defdata2020,
+ ncluster=4, alpha1 = 0.5, nboot1 = 1000)
+```
+
+```{r}
+lambda2 <- lambda2_calculator(pdat1 = defdata2019, pdat2 = defdata2020,
+ ncluster = 4, alpha2 = 0.5, nboot2 = 1000)
+```
+
+```{r}
+sdc_res <- sparsedc_cluster(pdat1 = defdata2019, pdat2 = defdata2020, ncluster = 4,
+lambda1 = lambda1/3, lambda2 = lambda2*1.25, nitter = 20, nstarts =50)
+```
+
+```{r}
+defclusters_2020 <- sdc_res$clusters2
+defcenters_2020 <- sdc_res$centers2
+rownames(defcenters_2020) <- colnames(defno_team_name)
+```
+
+```{r}
+defcenters_2006
+defcenters_2007
+defcenters_2008
+defcenters_2009
+defcenters_2010
+defcenters_2011
+defcenters_2012
+defcenters_2013
+defcenters_2014
+defcenters_2015
+defcenters_2016
+defcenters_2017
+defcenters_2018
+defcenters_2019
+defcenters_2020
+```
+
+```{r}
+d <- cbind.data.frame(defavgs$defteam, defclusters_2006, defclusters_2007, defclusters_2008, defclusters_2009, defclusters_2010, defclusters_2011, defclusters_2012, defclusters_2013, defclusters_2014, defclusters_2015, defclusters_2016, defclusters_2017, defclusters_2018, defclusters_2019, defclusters_2020)
+
+rownames(d) <- d$`defavgs$defteam`
+
+d <- d[2:16]
+dx <- as.data.frame(t(d))
+dx$year <- rownames(dx)
+dx$year <- substr(dx$year, 13, 16)
+dx <- melt(dx, id.vars=c("year"))
+```
+
+```{r}
+dx$value[dx$year == 2006 & dx$value == 4] = 'Stability'
+dx$value[dx$year == 2006 & dx$value == 1] = 'Gash'
+dx$value[dx$year == 2006 & dx$value == 3] = 'Chaos'
+dx$value[dx$year == 2006 & dx$value == 2] = 'Big Play'
+
+dx$value[dx$year == 2007 & dx$value == 4] = 'Stability'
+dx$value[dx$year == 2007 & dx$value == 1] = 'Gash'
+dx$value[dx$year == 2007 & dx$value == 3] = 'Chaos'
+dx$value[dx$year == 2007 & dx$value == 2] = 'Big Play'
+
+dx$value[dx$year == 2008 & dx$value == 2] = 'Stability'
+dx$value[dx$year == 2008 & dx$value == 4] = 'Gash'
+dx$value[dx$year == 2008 & dx$value == 3] = 'Chaos'
+dx$value[dx$year == 2008 & dx$value == 1] = 'Big Play'
+
+dx$value[dx$year == 2009 & dx$value == 2] = 'Big Play'
+dx$value[dx$year == 2009 & dx$value == 3] = 'Gash'
+dx$value[dx$year == 2009 & dx$value == 4] = 'Chaos'
+dx$value[dx$year == 2009 & dx$value == 1] = 'Stability'
+
+dx$value[dx$year == 2010 & dx$value == 1] = 'Chaos'
+dx$value[dx$year == 2010 & dx$value == 4] = 'Stability'
+dx$value[dx$year == 2010 & dx$value == 2] = 'Gash'
+dx$value[dx$year == 2010 & dx$value == 3] = 'Big Play'
+
+dx$value[dx$year == 2011 & dx$value == 3] = 'Big Play'
+dx$value[dx$year == 2011 & dx$value == 4] = 'Chaos'
+dx$value[dx$year == 2011 & dx$value == 1] = 'Gash'
+dx$value[dx$year == 2011 & dx$value == 2] = 'Stability'
+
+dx$value[dx$year == 2012 & dx$value == 4] = 'Gash'
+dx$value[dx$year == 2012 & dx$value == 2] = 'Stability'
+dx$value[dx$year == 2012 & dx$value == 1] = 'Big Play'
+dx$value[dx$year == 2012 & dx$value == 3] = 'Chaos'
+
+dx$value[dx$year == 2013 & dx$value == 3] = 'Gash'
+dx$value[dx$year == 2013 & dx$value == 2] = 'Chaos'
+dx$value[dx$year == 2013 & dx$value == 1] = 'Stability'
+dx$value[dx$year == 2013 & dx$value == 4] = 'Big Play'
+
+dx$value[dx$year == 2014 & dx$value == 2] = 'Stability'
+dx$value[dx$year == 2014 & dx$value == 3] = 'Gash'
+dx$value[dx$year == 2014 & dx$value == 1] = 'Big Play'
+dx$value[dx$year == 2014 & dx$value == 4] = 'Chaos'
+
+dx$value[dx$year == 2015 & dx$value == 2] = 'Stability'
+dx$value[dx$year == 2015 & dx$value == 1] = 'Big Play'
+dx$value[dx$year == 2015 & dx$value == 4] = 'Chaos'
+dx$value[dx$year == 2015 & dx$value == 3] = 'Gash'
+
+dx$value[dx$year == 2016 & dx$value == 1] = 'Stability'
+dx$value[dx$year == 2016 & dx$value == 4] = 'Big Play'
+dx$value[dx$year == 2016 & dx$value == 3] = 'Gash'
+dx$value[dx$year == 2016 & dx$value == 2] = 'Chaos'
+
+dx$value[dx$year == 2017 & dx$value == 1] = 'Stability'
+dx$value[dx$year == 2017 & dx$value == 4] = 'Big Play'
+dx$value[dx$year == 2017 & dx$value == 3] = 'Chaos'
+dx$value[dx$year == 2017 & dx$value == 2] = 'Gash'
+
+dx$value[dx$year == 2018 & dx$value == 3] = 'Big Play'
+dx$value[dx$year == 2018 & dx$value == 2] = 'Chaos'
+dx$value[dx$year == 2018 & dx$value == 1] = 'Gash'
+dx$value[dx$year == 2018 & dx$value == 4] = 'Stability'
+
+dx$value[dx$year == 2019 & dx$value == 2] = 'Gash'
+dx$value[dx$year == 2019 & dx$value == 1] = 'Big Play'
+dx$value[dx$year == 2019 & dx$value == 4] = 'Chaos'
+dx$value[dx$year == 2019 & dx$value == 3] = 'Stability'
+
+dx$value[dx$year == 2020 & dx$value == 4] = 'Big Play'
+dx$value[dx$year == 2020 & dx$value == 1] = 'Stability'
+dx$value[dx$year == 2020 & dx$value == 3] = 'Chaos'
+dx$value[dx$year == 2020 & dx$value == 2] = 'Gash'
+```
+
+```{r}
+dxnw <- dx[dx$variable == 'ARI' | dx$variable == 'LA' | dx$variable == 'SEA' | dx$variable == 'SF', ]
+dxnn <- dx[dx$variable == 'GB' | dx$variable == 'CHI' | dx$variable == 'MIN' | dx$variable == 'DET', ]
+dxns <- dx[dx$variable == 'NO' | dx$variable == 'TB' | dx$variable == 'CAR' | dx$variable == 'ATL', ]
+dxne <- dx[dx$variable == 'NYG' | dx$variable == 'WAS' | dx$variable == 'DAL' | dx$variable == 'PHI', ]
+dxaw <- dx[dx$variable == 'DEN' | dx$variable == 'LAC' | dx$variable == 'LV' | dx$variable == 'KC', ]
+dxan <- dx[dx$variable == 'CIN' | dx$variable == 'CLE' | dx$variable == 'PIT' | dx$variable == 'BAL', ]
+dxas <- dx[dx$variable == 'IND' | dx$variable == 'TEN' | dx$variable == 'JAX' | dx$variable == 'HOU', ]
+dxae <- dx[dx$variable == 'NE' | dx$variable == 'NYJ' | dx$variable == 'BUF' | dx$variable == 'MIA', ]
+gdxnw <- ggplot(fxnw, aes(x=as.numeric(year), y=value, group=variable, color=variable)) + 
+  geom_line() 
+gdxnw <- gfxnw + scale_x_continuous(breaks = as.numeric(dxnw$year)) + ggtitle("NFC West") + xlab("Years") + ylab("Clusters")
+gdxnn <- ggplot(dxnn, aes(x=as.numeric(year), y=value, group=variable, color=variable)) + 
+  geom_line() 
+gdxnn <- gdxnn + scale_x_continuous(breaks = as.numeric(dxnn$year)) + ggtitle("NFC North") + xlab("Years") + ylab("Clusters")
+gdxns <- ggplot(dxns, aes(x=as.numeric(year), y=value, group=variable, color=variable)) + 
+  geom_line() 
+gdxns <- gdxns + scale_x_continuous(breaks = as.numeric(dxns$year)) + ggtitle("NFC South") + xlab("Years") + ylab("Clusters")
+gdxne <- ggplot(dxne, aes(x=as.numeric(year), y=value, group=variable, color=variable)) + 
+  geom_line() 
+gdxne <- gdxne + scale_x_continuous(breaks = as.numeric(dxne$year)) + ggtitle("NFC East") + xlab("Years") + ylab("Clusters")
+gdxaw <- ggplot(dxaw, aes(x=as.numeric(year), y=value, group=variable, color=variable)) + 
+  geom_line() 
+gdxaw <- gdxaw + scale_x_continuous(breaks = as.numeric(dxaw$year)) + ggtitle("AFC West") + xlab("Years") + ylab("Clusters")
+gdxan <- ggplot(dxan, aes(x=as.numeric(year), y=value, group=variable, color=variable)) + 
+  geom_line() 
+gdxan <- gdxan + scale_x_continuous(breaks = as.numeric(dxan$year)) + ggtitle("AFC North") + xlab("Years") + ylab("Clusters")
+gdxas <- ggplot(dxas, aes(x=as.numeric(year), y=value, group=variable, color=variable)) + 
+  geom_line() 
+gdxas <- gdxas + scale_x_continuous(breaks = as.numeric(dxas$year)) + ggtitle("AFC South") + xlab("Years") + ylab("Clusters")
+gdxae <- ggplot(dxae, aes(x=as.numeric(year), y=value, group=variable, color=variable)) + 
+  geom_line() 
+gdxae <- gdxae + scale_x_continuous(breaks = as.numeric(dxae$year)) + ggtitle("AFC East") + xlab("Years") + ylab("Clusters") 
+
+```
+
+```{r}
+gdxnn
+gdxns
+gdxne
+gdxnw
+gdxan
+gdxas
+gdxae
+gdxaw
+```
+
+```{r}
+pbp$offensivetype <- NA
+for(i in 1:nrow(fx)){
+  pbp$offensivetype[which(pbp$season == fx$year[i] & pbp$posteam == fx$variable[i])] = fx$value[i]
+
+}
+
+pbp$defensivetype <- NA
+for(i in 1:nrow(dx)){
+  pbp$defensivetype[which(pbp$season == dx$year[i] & pbp$defteam == dx$variable[i])] = dx$value[i]
+
+}
+```
+
+```{r}
+epaavgs <- pbp %>% 
+  filter(play_type != 'no_play' & (down == 1 | down == 2 ) ) %>% 
+  select(offensivetype, defensivetype, down, mtten, ltten, ten, redzone, highwind, hot, cold, rain, snow, play_type, pass_location, pass_length, run_location, run_gap, epa) %>%
+  group_by(offensivetype, defensivetype, down, mtten, ltten, ten, redzone, highwind, hot, cold, rain, snow, play_type, pass_location, pass_length, run_location, run_gap) %>%
+  summarise(epa = mean(epa))
+```
+###check to see if any are no play still
+
+#```{r}
+unique(epaavgs$play_type)
+
+```
+
+```{r}
+determinestyle <- function(yourteam, opposingteam){
+  fxforthisfx  <- fx %>% 
+          filter(year == 2020 & variable == yourteam) 
+  dxforthisfx <- dx %>% 
+          filter(year == 2020 & variable == opposingteam)
+return(paste0('Your offense is a ', fxforthisfx$value, ' style and the defense is a ', dxforthisfx$value, ' style!'))
+}
+```
+
+
+#```{r}
+ytgtest <-  pbp %>% 
+    select(ydstogo, mtten, ltten, ten)
+
+
+ytgtestfx <- function(g){
+  ifelse((g>10), (ytgtest <- ytgtest %>% 
+                        filter(mtten == 1)),
+                ifelse((g==10), (ytgtest <- ytgtest %>% 
+                                filter(ten == 1)), 
+                                (ytgtest  <- ytgtest %>% 
+                                filter(ltten == 1))
+  )
+                                          
+  )
+  return(ytgtest)
+}
+
+ytgtestfx(4)
+
+```
+
+
+###off, def, down, redzone will be self explanatory. roof will ask if dome or not, w/ dome 0 for all weather
+###if no dome, ask mph for high wind, temp for hot/cold to classify by already known bounds, rain/snow binaries
+```{r}
+bestplay <- function(offense, defense, down, ytgx, redzone, roof, wind, temp, rain, snow){
+   
+    ifelse((ytgx>10), (epaavgs <- epaavgs %>% 
+                        filter(mtten == 1)),
+                ifelse((ytgx==10), (epaavgs <- epaavgs %>% 
+                                filter(ten == 1)), 
+                                (epaavgs  <- epaavgs %>% 
+                                filter(ltten == 1))
+    )                                       
+    )
+    ifelse((redzone == 'yes'), (epaavgs <- epaavgs %>% 
+                                    filter(redzone == 1)),
+                                      (epaavgs <- epaavgs %>% 
+                                          filter(redzone == 0))
+    )
+
+    ifelse((roof == 'dome'), (epaavgs <- epaavgs %>% 
+                                filter(highwind == 0 & hot == 0 & cold == 0 & rain == 0 & snow == 0)),
+                          ifelse((roof == 'outside'),
+            ifelse((wind >= 20 & temp >= 80 & rain == 'yes' & snow == 'no'), 
+                      (epaavgs <- epaavgs %>% 
+                          filter(highwind == 1, hot == 1, rain == 1, snow == 0)),
+                      ifelse((wind >= 20 & temp <= 32 & rain == 'yes' & snow == 'no'),
+                          (epaavgs <- epaavgs %>% 
+                                filter(highwind == 1, cold == 1, rain == 1, snow == 0)),
+                            ifelse((wind >= 20 & temp < 80 & temp > 32 & rain == 'yes' & snow == 'no'), 
+                                          (epaavgs <- epaavgs %>% 
+                                          filter(highwind == 1, hot == 0, cold == 0, rain == 1, snow == 0)),
+                      ifelse((wind >= 20 & temp <= 32 & rain == 'no' & snow == 'yes'),
+                           (epaavgs <- epaavgs %>% 
+                                filter(highwind == 1, cold == 1, rain == 0, snow == 1)),
+                      ifelse((wind >= 20 & temp >= 80 & rain == 'no' & snow == 'no'),
+                          (epaavgs <- epaavgs %>% 
+                                filter(highwind == 1, hot == 1, rain == 0, snow == 0)),
+                            ifelse((wind >= 20 & temp <= 32 & rain == 'no' & snow == 'no'),
+                                (epaavgs <- epaavgs %>% 
+                                      filter(highwind == 1, cold == 1, rain == 0, snow == 0)),
+                      ifelse((wind >= 20 & temp < 80 & temp > 32 & rain == 'no' & snow == 'no'),
+                            (epaavgs <- epaavgs %>% 
+                                filter(highwind == 1, hot == 0, cold == 0, rain == 0, snow == 0)),
+            ifelse((wind < 20 & temp >= 80 & rain == 'yes' & snow == 'no'), 
+                      (epaavgs <- epaavgs %>% 
+                          filter(highwind == 0, hot == 1, rain == 1, snow == 0)),
+                            ifelse((wind < 20 & temp < 80 & temp > 32 & rain == 'yes' & snow == 'no'), 
+                                          (epaavgs <- epaavgs %>% 
+                                          filter(highwind == 0, hot == 0, cold == 0, rain == 1, snow == 0)),
+                      ifelse((wind < 20 & temp <= 32 & rain == 'no' & snow == 'yes'),
+                           (epaavgs <- epaavgs %>% 
+                                filter(highwind == 0, cold == 1, rain == 0, snow == 1)),
+            ifelse((wind < 20 & temp < 80 & temp > 32 & rain == 'no' & snow == 'yes'),
+                      (epaavgs <- epaavgs %>% 
+                          filter(highwind == 0, hot == 0, cold == 0, rain == 0, snow == 1)),
+                      ifelse((wind < 20 & temp >= 80 & rain == 'no' & snow == 'no'),
+                          (epaavgs <- epaavgs %>% 
+                                filter(highwind == 0, hot == 1, rain == 0, snow == 0)),
+                            ifelse((wind < 20 & temp <= 32 & rain == 'no' & snow == 'no'),
+                                (epaavgs <- epaavgs %>% 
+                                      filter(highwind == 0, cold == 1, rain == 0, snow == 0)),
+                      ifelse((wind < 20 & temp < 80 & temp > 32 & rain == 'no' & snow == 'no'),
+                            (epaavgs <- epaavgs %>% 
+                                filter(highwind == 0, hot == 0, cold == 0, rain == 0, snow == 0)),
+    )
+    )
+    )      
+    )
+    )
+    )
+    )
+    )
+    )
+    )
+    )
+    )
+    )                               
+    )                                      
+    )
+    )
+
+
+  offdef <- subset(epaavgs, epaavgs$offensivetype == offense & epaavgs$defensivetype == defense & epaavgs$down == down)
+
+  #offdef$run_gap <- ifelse(offdef$play_type == 'run' & is.na(offdef$run_gap), 'sweep', offdef$run_gap)
+                      
+  offdef <- offdef %>% 
+    group_by(play_type, pass_location, pass_length, run_gap) %>% 
+    summarise(epa = max(epa)) %>%
+    filter(epa >= 0) %>%
+    arrange(desc(epa))
+  
+
+
+return(offdef)
+
+}
+```
+
+```{r}
+
+```
+
+###'your team' dropdown with all teams
+###'opp team' dropdown with all teams
+```{r}
+determinestyle("ARI", "IND")
+```
+
+
+###offense from above
+###defense from above
+###down dropdown with 1 and 2
+###'yards to go for conversion' free text box
+###redzone dropdown with yes and no
+###roof dropdown with dome and outside
+###if roof choice is outside, following are displayed, 
+###if roof choice is dome, then all default to 0 and are not answered
+###wind free text box asking for mph
+###temp free text asking for degrees
+###extreme weather dropdown with rain and snow and neither
+```{r}
+bestplay('Ground & Pound', 'Gash', 1, 10, 'yes', 
+        'outside', 0, 12, 'no', 'no')
+```
